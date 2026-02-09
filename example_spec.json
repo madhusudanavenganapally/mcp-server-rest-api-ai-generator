@@ -1,0 +1,19 @@
+{
+    "projectName": "demo-project",
+    "basePackage": "com.example.demo",
+    "apiRequirements": "Create a User management API.",
+    "apiGoldStandards": "Follow REST best practices.",
+    "packageStructure": {
+        "controller": [
+            "UserController",
+            "AdminController"
+        ],
+        "service": [
+            "UserService",
+            "AdminService"
+        ],
+        "repository": [
+            "UserRepository"
+        ]
+    }
+}

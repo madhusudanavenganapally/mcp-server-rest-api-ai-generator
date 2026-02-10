@@ -1,207 +1,255 @@
 package com.rvvcode.ai.mcp.server.service;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.ai.tool.annotation.Tool;
+import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.stereotype.Service;
+
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.List;
-import java.util.Map;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.rvvcode.ai.mcp.server.dto.ProjectSpec;
 
 @Service
 public class ProjectGenerator {
 
-    public record BootstrapProjectRequest(String projectName, String basePackage, String apiRequirements,
-            String specFilePath) {
-    }
+    private static final Logger log = LoggerFactory.getLogger(ProjectGenerator.class);
 
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    @Tool(name = "bootstrap_project", description = "Generate a production-ready Spring Boot 3 skeleton with Oracle JPA, MapStruct and OpenAPI")
+    public String bootstrapProject(
+            @ToolParam(description = "Project name / root folder") String projectName,
+            @ToolParam(description = "Base Java package, for example com.acme.platform") String basePackage,
+            @ToolParam(description = "Functional API requirements in plain text") String apiRequirements) {
 
-    public String bootstrap(BootstrapProjectRequest request) {
+        log.info("Entering bootstrapProject for projectName={}", projectName);
         try {
-            ProjectSpec spec = resolveSpec(request);
-
-            Path projectRoot = Paths.get(spec.projectName());
+            Path projectRoot = Paths.get(projectName).toAbsolutePath();
             if (Files.exists(projectRoot)) {
-                return "Project directory already exists: " + projectRoot.toAbsolutePath();
+                return "Project already exists at " + projectRoot;
             }
-            Files.createDirectories(projectRoot);
 
-            createBuildGradle(projectRoot, spec);
-            createSettingsGradle(projectRoot, spec);
-            createStructure(projectRoot, spec);
-            createApplicationClass(projectRoot, spec.basePackage());
-            createApplicationYml(projectRoot);
-            createDocumentation(projectRoot, spec);
+            createDirectory(projectRoot.resolve("src/main/java").resolve(basePackage.replace('.', '/')));
+            createDirectory(projectRoot.resolve("src/main/resources"));
+            createDirectory(projectRoot.resolve("src/test/java").resolve(basePackage.replace('.', '/')));
 
-            return "Project " + spec.projectName() + " bootstrapped successfully at " + projectRoot.toAbsolutePath();
-        } catch (IOException e) {
-            return "Failed to bootstrap project: " + e.getMessage();
+            writeFile(projectRoot.resolve("pom.xml"), pomXml(projectName));
+            writeFile(projectRoot.resolve("src/main/resources/application.yml"), applicationYml());
+            writeFile(projectRoot.resolve("README.md"), readme(projectName, basePackage, apiRequirements));
+
+            Path featureRoot = projectRoot.resolve("src/main/java").resolve(basePackage.replace('.', '/')).resolve("customer");
+            createDirectory(featureRoot);
+            writeFile(featureRoot.resolve("CustomerController.java"), controllerSkeleton(basePackage));
+            writeFile(featureRoot.resolve("CustomerService.java"), serviceSkeleton(basePackage));
+            writeFile(featureRoot.resolve("CustomerRepository.java"), repositorySkeleton(basePackage));
+
+            return "Bootstrapped enterprise project at " + projectRoot;
+        } catch (IOException ex) {
+            log.error("Failed to bootstrap project", ex);
+            return "Failed to bootstrap project: " + ex.getMessage();
+        } finally {
+            log.info("Exiting bootstrapProject for projectName={}", projectName);
         }
     }
 
-    private ProjectSpec resolveSpec(BootstrapProjectRequest request) throws IOException {
-        if (request.specFilePath() != null && !request.specFilePath().isBlank()) {
-            Path specPath = Paths.get(request.specFilePath());
-            if (Files.exists(specPath)) {
-                return objectMapper.readValue(specPath.toFile(), com.rvvcode.ai.mcp.server.dto.ProjectSpec.class);
-            }
-        }
-        // Fallback or merge logic could go here. For now, create spec from direct args.
-        // Assuming default structure if not provided via spec.
-        return new com.rvvcode.ai.mcp.server.dto.ProjectSpec(
-                request.projectName(),
-                request.basePackage(),
-                request.apiRequirements(),
-                null,
-                Map.of("controller", List.of(), "service", List.of(), "repository", List.of()));
+    private void createDirectory(Path path) throws IOException {
+        Files.createDirectories(path);
     }
 
-    private void createBuildGradle(Path root, com.rvvcode.ai.mcp.server.dto.ProjectSpec spec) throws IOException {
-        String content = """
-                plugins {
-                    id 'java'
-                    id 'org.springframework.boot' version '3.2.3'
-                    id 'io.spring.dependency-management' version '1.1.4'
-                }
-
-                group = 'com.example'
-                version = '0.0.1-SNAPSHOT'
-
-                java {
-                    sourceCompatibility = '17'
-                }
-
-                configurations {
-                    compileOnly {
-                        extendsFrom annotationProcessor
-                    }
-                }
-
-                repositories {
-                    mavenCentral()
-                }
-
-                ext {
-                    set('mapstructVersion', '1.5.5.Final')
-                }
-
-                dependencies {
-                    implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
-                    implementation 'org.springframework.boot:spring-boot-starter-web'
-                    implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:2.3.0'
-                    implementation "org.mapstruct:mapstruct:${mapstructVersion}"
-
-                    runtimeOnly 'com.oracle.database.jdbc:ojdbc11'
-
-                    compileOnly 'org.projectlombok:lombok'
-
-                    annotationProcessor 'org.projectlombok:lombok'
-                    annotationProcessor "org.mapstruct:mapstruct-processor:${mapstructVersion}"
-
-                    testImplementation 'org.springframework.boot:spring-boot-starter-test'
-                }
-
-                tasks.named('test') {
-                    useJUnitPlatform()
-                }
-                """;
-        Files.writeString(root.resolve("build.gradle"), content);
+    private void writeFile(Path path, String content) throws IOException {
+        createDirectory(path.getParent());
+        Files.writeString(path, content);
     }
 
-    private void createSettingsGradle(Path root, com.rvvcode.ai.mcp.server.dto.ProjectSpec spec) throws IOException {
-        String content = "rootProject.name = '" + spec.projectName() + "'\n";
-        Files.writeString(root.resolve("settings.gradle"), content);
+    private String pomXml(String projectName) {
+        return """
+                <?xml version="1.0" encoding="UTF-8"?>
+                <project xmlns="http://maven.apache.org/POM/4.0.0"
+                         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+                    <modelVersion>4.0.0</modelVersion>
+                    <parent>
+                        <groupId>org.springframework.boot</groupId>
+                        <artifactId>spring-boot-starter-parent</artifactId>
+                        <version>3.3.5</version>
+                        <relativePath/>
+                    </parent>
+                    <groupId>com.generated</groupId>
+                    <artifactId>%s</artifactId>
+                    <version>0.0.1-SNAPSHOT</version>
+                    <name>%s</name>
+                    <description>Generated by MCP enterprise stack automation server</description>
+
+                    <properties>
+                        <java.version>17</java.version>
+                        <mapstruct.version>1.5.5.Final</mapstruct.version>
+                    </properties>
+
+                    <dependencies>
+                        <dependency>
+                            <groupId>org.springframework.boot</groupId>
+                            <artifactId>spring-boot-starter-web</artifactId>
+                        </dependency>
+                        <dependency>
+                            <groupId>org.springframework.boot</groupId>
+                            <artifactId>spring-boot-starter-data-jpa</artifactId>
+                        </dependency>
+                        <dependency>
+                            <groupId>org.springdoc</groupId>
+                            <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+                            <version>2.6.0</version>
+                        </dependency>
+                        <dependency>
+                            <groupId>org.mapstruct</groupId>
+                            <artifactId>mapstruct</artifactId>
+                            <version>${mapstruct.version}</version>
+                        </dependency>
+                        <dependency>
+                            <groupId>com.oracle.database.jdbc</groupId>
+                            <artifactId>ojdbc11</artifactId>
+                            <scope>runtime</scope>
+                        </dependency>
+                        <dependency>
+                            <groupId>org.springframework.boot</groupId>
+                            <artifactId>spring-boot-starter-test</artifactId>
+                            <scope>test</scope>
+                        </dependency>
+                    </dependencies>
+
+                    <build>
+                        <plugins>
+                            <plugin>
+                                <groupId>org.apache.maven.plugins</groupId>
+                                <artifactId>maven-compiler-plugin</artifactId>
+                                <configuration>
+                                    <source>${java.version}</source>
+                                    <target>${java.version}</target>
+                                    <annotationProcessorPaths>
+                                        <path>
+                                            <groupId>org.mapstruct</groupId>
+                                            <artifactId>mapstruct-processor</artifactId>
+                                            <version>${mapstruct.version}</version>
+                                        </path>
+                                    </annotationProcessorPaths>
+                                </configuration>
+                            </plugin>
+                        </plugins>
+                    </build>
+                </project>
+                """.formatted(projectName, projectName);
     }
 
-    private void createStructure(Path root, com.rvvcode.ai.mcp.server.dto.ProjectSpec spec) throws IOException {
-        Path srcMainJava = root.resolve("src/main/java");
-        Path packagePath = srcMainJava.resolve(spec.basePackage().replace('.', '/'));
-
-        // Standard directories
-        Files.createDirectories(packagePath.resolve("domain"));
-        Files.createDirectories(packagePath.resolve("mapper"));
-        Files.createDirectories(packagePath.resolve("dto"));
-        Files.createDirectories(root.resolve("src/main/resources"));
-
-        // Dynamic structure from spec
-        if (spec.packageStructure() != null) {
-            for (Map.Entry<String, List<String>> entry : spec.packageStructure().entrySet()) {
-                Path dir = packagePath.resolve(entry.getKey());
-                Files.createDirectories(dir);
-                // Create placeholders for classes
-                if (entry.getValue() != null) {
-                    for (String className : entry.getValue()) {
-                        createPlaceholderClass(dir, spec.basePackage() + "." + entry.getKey(), className);
-                    }
-                }
-            }
-        } else {
-            Files.createDirectories(packagePath.resolve("controller"));
-            Files.createDirectories(packagePath.resolve("service"));
-            Files.createDirectories(packagePath.resolve("repository"));
-        }
-    }
-
-    private void createPlaceholderClass(Path dir, String packageName, String className) throws IOException {
-        String content = """
-                package %s;
-
-                import org.springframework.stereotype.Component;
-
-                @Component
-                public class %s {
-                }
-                """.formatted(packageName, className);
-        Files.writeString(dir.resolve(className + ".java"), content);
-    }
-
-    private void createDocumentation(Path root, com.rvvcode.ai.mcp.server.dto.ProjectSpec spec) throws IOException {
-        if (spec.apiRequirements() != null) {
-            Files.writeString(root.resolve("API_REQUIREMENTS.md"), spec.apiRequirements());
-        }
-        if (spec.apiGoldStandards() != null) {
-            Files.writeString(root.resolve("API_STANDARDS.md"), spec.apiGoldStandards());
-        }
-    }
-
-    private void createApplicationClass(Path root, String basePackage) throws IOException {
-        Path packagePath = root.resolve("src/main/java").resolve(basePackage.replace('.', '/'));
-        String content = """
-                package %s;
-
-                import org.springframework.boot.SpringApplication;
-                import org.springframework.boot.autoconfigure.SpringBootApplication;
-
-                @SpringBootApplication
-                public class Application {
-
-                    public static void main(String[] args) {
-                        SpringApplication.run(Application.class, args);
-                    }
-                }
-                """.formatted(basePackage);
-        String className = "Application.java";
-        Files.writeString(packagePath.resolve(className), content);
-    }
-
-    private void createApplicationYml(Path root) throws IOException {
-        String content = """
+    private String applicationYml() {
+        return """
                 spring:
                   datasource:
-                    url: jdbc:oracle:thin:@localhost:1521/helowin
-                    username: system
-                    password: oracle-password
+                    url: jdbc:oracle:thin:@localhost:1521/FREEPDB1
+                    username: app_user
+                    password: app_password
                     driver-class-name: oracle.jdbc.OracleDriver
                   jpa:
                     hibernate:
-                      ddl-auto: update
+                      ddl-auto: validate
                     properties:
                       hibernate:
                         dialect: org.hibernate.dialect.OracleDialect
+                  jackson:
+                    default-property-inclusion: non_null
+                springdoc:
+                  swagger-ui:
+                    path: /swagger-ui.html
                 """;
-        Files.writeString(root.resolve("src/main/resources/application.yml"), content);
+    }
+
+    private String readme(String projectName, String basePackage, String apiRequirements) {
+        return """
+                # %s
+
+                Generated with MCP bootstrap_project tool.
+
+                - Base package: `%s`
+                - Architecture: Package-by-Feature
+                - Stack: Spring Boot 3, Oracle JPA, MapStruct, SpringDoc OpenAPI
+
+                ## API requirements
+                %s
+                """.formatted(projectName, basePackage, apiRequirements == null ? "N/A" : apiRequirements);
+    }
+
+    private String controllerSkeleton(String basePackage) {
+        return """
+                package %s.customer;
+
+                import org.springframework.web.bind.annotation.GetMapping;
+                import org.springframework.web.bind.annotation.RequestMapping;
+                import org.springframework.web.bind.annotation.RestController;
+
+                import java.util.List;
+
+                @RestController
+                @RequestMapping("/api/customers")
+                public class CustomerController {
+
+                    private final CustomerService service;
+
+                    public CustomerController(CustomerService service) {
+                        this.service = service;
+                    }
+
+                    @GetMapping
+                    public List<String> findAll() {
+                        return service.findAll();
+                    }
+                }
+                """.formatted(basePackage);
+    }
+
+    private String serviceSkeleton(String basePackage) {
+        return """
+                package %s.customer;
+
+                import org.slf4j.Logger;
+                import org.slf4j.LoggerFactory;
+                import org.springframework.stereotype.Service;
+                import org.springframework.transaction.annotation.Transactional;
+
+                import java.util.List;
+
+                @Service
+                @Transactional(readOnly = true)
+                public class CustomerService {
+
+                    private static final Logger log = LoggerFactory.getLogger(CustomerService.class);
+                    private final CustomerRepository repository;
+
+                    public CustomerService(CustomerRepository repository) {
+                        this.repository = repository;
+                    }
+
+                    public List<String> findAll() {
+                        log.info("Entering CustomerService.findAll");
+                        List<String> result = repository.findAllCustomerNames();
+                        log.info("Exiting CustomerService.findAll size={}", result.size());
+                        return result;
+                    }
+                }
+                """.formatted(basePackage);
+    }
+
+    private String repositorySkeleton(String basePackage) {
+        return """
+                package %s.customer;
+
+                import org.springframework.data.jpa.repository.JpaRepository;
+                import org.springframework.data.jpa.repository.Query;
+
+                import java.util.List;
+
+                public interface CustomerRepository extends JpaRepository<CustomerEntity, Long> {
+
+                    @Query("select c.name from CustomerEntity c")
+                    List<String> findAllCustomerNames();
+                }
+                """.formatted(basePackage);
     }
 }

@@ -1,214 +1,184 @@
 package com.rvvcode.ai.mcp.server.service;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.ai.tool.annotation.Tool;
+import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.stereotype.Service;
+
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.nio.file.StandardOpenOption;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 @Service
 public class DomainEnhancer {
 
-    public record EnhanceDomainRequest(String entityName, Map<String, String> fields, List<String> repositoryMethods,
-            String projectRootPath) {
-    }
+    private static final Logger log = LoggerFactory.getLogger(DomainEnhancer.class);
 
-    public String enhance(EnhanceDomainRequest request) {
+    @Tool(name = "enhance_domain", description = "Create or update @Entity, MapStruct mapper, repository methods, service, and controller using package-by-feature")
+    public String enhanceDomain(
+            @ToolParam(description = "Entity name, e.g. Customer") String entityName,
+            @ToolParam(description = "Field map in format fieldName:JavaType") Map<String, String> fields,
+            @ToolParam(description = "Repository methods signatures, e.g. Optional<CustomerEntity> findByEmail(String email)") List<String> repositoryMethods) {
+        log.info("Entering enhanceDomain entityName={}", entityName);
         try {
-            Path projectRoot = request.projectRootPath() != null ? Paths.get(request.projectRootPath())
-                    : findProjectRoot();
-            String basePackage = findBasePackage(projectRoot);
+            Path projectRoot = Paths.get(System.getProperty("user.dir"));
+            String basePackage = resolveBasePackage(projectRoot);
+            String featureName = entityName.toLowerCase();
 
-            // Package-by-Feature: create a sub-package named after the entity (lowercase)
-            String featurePackageName = request.entityName().toLowerCase();
             Path featureDir = projectRoot.resolve("src/main/java")
                     .resolve(basePackage.replace('.', '/'))
-                    .resolve(featurePackageName);
-
-            String fullFeaturePackage = basePackage + "." + featurePackageName;
-
+                    .resolve(featureName);
             Files.createDirectories(featureDir);
 
-            createEntity(featureDir, fullFeaturePackage, request);
-            createRepository(featureDir, fullFeaturePackage, request);
-            createDto(featureDir, fullFeaturePackage, request);
-            createMapper(featureDir, fullFeaturePackage, request);
-            createService(featureDir, fullFeaturePackage, request);
-            createController(featureDir, fullFeaturePackage, request);
+            writeFile(featureDir.resolve(entityName + "Entity.java"), entityContent(basePackage, featureName, entityName, fields));
+            writeFile(featureDir.resolve(entityName + "Dto.java"), dtoContent(basePackage, featureName, entityName, fields));
+            writeFile(featureDir.resolve(entityName + "Mapper.java"), mapperContent(basePackage, featureName, entityName));
+            writeFile(featureDir.resolve(entityName + "Repository.java"), repositoryContent(basePackage, featureName, entityName, repositoryMethods));
+            writeFile(featureDir.resolve(entityName + "Service.java"), serviceContent(basePackage, featureName, entityName));
+            writeFile(featureDir.resolve(entityName + "Controller.java"), controllerContent(basePackage, featureName, entityName));
 
-            return "Domain enhanced for " + request.entityName() + " in package " + fullFeaturePackage;
-        } catch (Exception e) {
-            return "Failed to enhance domain: " + e.getMessage();
+            return "Enhanced domain for " + entityName + " at " + featureDir;
+        } catch (Exception ex) {
+            log.error("Failed to enhance domain", ex);
+            return "Failed to enhance domain: " + ex.getMessage();
+        } finally {
+            log.info("Exiting enhanceDomain entityName={}", entityName);
         }
     }
 
-    private Path findProjectRoot() {
-        return Paths.get(System.getProperty("user.dir"));
-        // In a real scenario, we might want to traverse up or accept it as an argument.
+    private void writeFile(Path path, String content) throws IOException {
+        Files.createDirectories(path.getParent());
+        Files.writeString(path, content);
     }
 
-    private String findBasePackage(Path root) throws IOException {
-        try (Stream<Path> walk = Files.walk(root.resolve("src/main/java"))) {
-            return walk.filter(p -> p.toString().endsWith("Application.java"))
+    private String resolveBasePackage(Path projectRoot) throws IOException {
+        Path javaRoot = projectRoot.resolve("src/main/java");
+        try (var walk = Files.walk(javaRoot)) {
+            return walk.filter(path -> path.getFileName().toString().endsWith("Application.java"))
                     .findFirst()
-                    .map(p -> {
-                        Path rel = root.resolve("src/main/java").relativize(p.getParent());
-                        return rel.toString().replace(java.io.File.separatorChar, '.');
-                    })
-                    .orElseThrow(() -> new IllegalStateException("Base package not found"));
+                    .map(path -> javaRoot.relativize(path.getParent()).toString().replace('/', '.'))
+                    .orElseThrow(() -> new IllegalStateException("Cannot resolve base package from Application class"));
         }
     }
 
-    // ... helper methods remain similar but write to featureDir directly without
-    // subfolders like 'domain', 'repository' usually
-    // OR we transform structure to:
-    // com.example.user
-    // User.java
-    // UserRepository.java
-    // UserService.java
-    // UserController.java
-    // UserDTO.java
-    // UserMapper.java
+    private String entityContent(String basePackage, String featureName, String entityName, Map<String, String> fields) {
+        String fieldText = fields.entrySet().stream()
+                .map(entry -> "    private " + entry.getValue() + " " + entry.getKey() + ";")
+                .collect(Collectors.joining("\n"));
+        return """
+                package %s.%s;
 
-    private void createEntity(Path dir, String packageName, EnhanceDomainRequest request) throws IOException {
-        String entityName = request.entityName();
-        StringBuilder fields = new StringBuilder();
-        request.fields().forEach(
-                (name, type) -> fields.append("    private ").append(type).append(" ").append(name).append(";\n"));
-
-        String content = """
-                package %s;
-
-                import jakarta.persistence.Entity;
-                import jakarta.persistence.GeneratedValue;
-                import jakarta.persistence.GenerationType;
-                import jakarta.persistence.Id;
-                import lombok.Data;
+                import jakarta.persistence.*;
 
                 @Entity
-                @Data
-                public class %s {
+                @Table(name = "%s")
+                public class %sEntity {
+
                     @Id
                     @GeneratedValue(strategy = GenerationType.IDENTITY)
                     private Long id;
-                %s
-                }
-                """.formatted(packageName, entityName, fields.toString());
 
-        Files.writeString(dir.resolve(entityName + ".java"), content);
+                %s
+
+                    public Long getId() { return id; }
+                    public void setId(Long id) { this.id = id; }
+                }
+                """.formatted(basePackage, featureName, entityName.toUpperCase(), entityName, fieldText);
     }
 
-    private void createRepository(Path dir, String packageName, EnhanceDomainRequest request) throws IOException {
-        String entityName = request.entityName();
-        StringBuilder methods = new StringBuilder();
-        request.repositoryMethods().forEach(method -> methods.append("    ").append(method).append(";\n"));
+    private String dtoContent(String basePackage, String featureName, String entityName, Map<String, String> fields) {
+        String fieldText = fields.entrySet().stream()
+                .map(entry -> "    private " + entry.getValue() + " " + entry.getKey() + ";")
+                .collect(Collectors.joining("\n"));
+        return """
+                package %s.%s;
 
-        String content = """
-                package %s;
+                public class %sDto {
 
-                import org.springframework.data.jpa.repository.JpaRepository;
-                import org.springframework.stereotype.Repository;
-
-                import java.util.List;
-                import java.util.Optional;
-
-                @Repository
-                public interface %sRepository extends JpaRepository<%s, Long> {
-                %s
-                }
-                """.formatted(packageName, entityName, entityName, methods.toString());
-
-        Files.writeString(dir.resolve(entityName + "Repository.java"), content);
-    }
-
-    private void createDto(Path dir, String packageName, EnhanceDomainRequest request) throws IOException {
-        String entityName = request.entityName();
-        StringBuilder fields = new StringBuilder();
-        request.fields().forEach(
-                (name, type) -> fields.append("    private ").append(type).append(" ").append(name).append(";\n"));
-
-        String content = """
-                package %s;
-
-                import lombok.Data;
-
-                @Data
-                public class %sDTO {
                     private Long id;
                 %s
-                }
-                """.formatted(packageName, entityName, fields.toString());
 
-        Files.writeString(dir.resolve(entityName + "DTO.java"), content);
+                    public Long getId() { return id; }
+                    public void setId(Long id) { this.id = id; }
+                }
+                """.formatted(basePackage, featureName, entityName, fieldText);
     }
 
-    private void createMapper(Path dir, String packageName, EnhanceDomainRequest request) throws IOException {
-        String entityName = request.entityName();
-        String content = """
-                package %s;
+    private String mapperContent(String basePackage, String featureName, String entityName) {
+        return """
+                package %s.%s;
 
                 import org.mapstruct.Mapper;
-                import org.mapstruct.factory.Mappers;
+                import org.mapstruct.ReportingPolicy;
 
-                @Mapper
+                @Mapper(componentModel = "spring", unmappedTargetPolicy = ReportingPolicy.IGNORE)
                 public interface %sMapper {
-                    %sMapper INSTANCE = Mappers.getMapper(%sMapper.class);
 
-                    %sDTO toDTO(%s entity);
-                    %s toEntity(%sDTO dto);
+                    %sDto toDto(%sEntity entity);
+
+                    %sEntity toEntity(%sDto dto);
                 }
-                """.formatted(packageName, entityName, entityName, entityName,
-                entityName, entityName, entityName, entityName);
-
-        Files.writeString(dir.resolve(entityName + "Mapper.java"), content);
+                """.formatted(basePackage, featureName, entityName, entityName, entityName, entityName, entityName);
     }
 
-    private void createService(Path dir, String packageName, EnhanceDomainRequest request) throws IOException {
-        String entityName = request.entityName();
-        String content = """
-                package %s;
+    private String repositoryContent(String basePackage, String featureName, String entityName, List<String> methods) {
+        String methodText = methods == null ? "" : methods.stream().map(m -> "    " + m + ";").collect(Collectors.joining("\n"));
+        return """
+                package %s.%s;
 
-                import lombok.RequiredArgsConstructor;
-                import lombok.extern.slf4j.Slf4j;
+                import org.springframework.data.jpa.repository.JpaRepository;
+
+                public interface %sRepository extends JpaRepository<%sEntity, Long> {
+                %s
+                }
+                """.formatted(basePackage, featureName, entityName, entityName, methodText);
+    }
+
+    private String serviceContent(String basePackage, String featureName, String entityName) {
+        return """
+                package %s.%s;
+
+                import org.slf4j.Logger;
+                import org.slf4j.LoggerFactory;
                 import org.springframework.stereotype.Service;
                 import org.springframework.transaction.annotation.Transactional;
 
                 import java.util.List;
-                import java.util.stream.Collectors;
 
                 @Service
-                @RequiredArgsConstructor
-                @Slf4j
-                @Transactional(readOnly = true)
+                @Transactional
                 public class %sService {
 
+                    private static final Logger log = LoggerFactory.getLogger(%sService.class);
                     private final %sRepository repository;
-                    private final %sMapper mapper = %sMapper.INSTANCE;
+                    private final %sMapper mapper;
 
-                    public List<%sDTO> findAll() {
-                        log.info("Entering findAll"); // Manual log as fallback/addition to AOP
-                        return repository.findAll().stream()
-                                .map(mapper::toDTO)
-                                .collect(Collectors.toList());
+                    public %sService(%sRepository repository, %sMapper mapper) {
+                        this.repository = repository;
+                        this.mapper = mapper;
+                    }
+
+                    @Transactional(readOnly = true)
+                    public List<%sDto> findAll() {
+                        log.info("Entering %sService.findAll");
+                        List<%sDto> result = repository.findAll().stream().map(mapper::toDto).toList();
+                        log.info("Exiting %sService.findAll size={}", result.size());
+                        return result;
                     }
                 }
-                """.formatted(packageName, entityName, entityName, entityName, entityName, entityName);
-
-        Files.writeString(dir.resolve(entityName + "Service.java"), content);
+                """.formatted(basePackage, featureName, entityName, entityName, entityName, entityName, entityName,
+                entityName, entityName, entityName, entityName, entityName, entityName);
     }
 
-    private void createController(Path dir, String packageName, EnhanceDomainRequest request) throws IOException {
-        String entityName = request.entityName();
-        String content = """
-                package %s;
+    private String controllerContent(String basePackage, String featureName, String entityName) {
+        return """
+                package %s.%s;
 
-                import lombok.RequiredArgsConstructor;
                 import org.springframework.web.bind.annotation.GetMapping;
                 import org.springframework.web.bind.annotation.RequestMapping;
                 import org.springframework.web.bind.annotation.RestController;
@@ -216,19 +186,20 @@ public class DomainEnhancer {
                 import java.util.List;
 
                 @RestController
-                @RequestMapping("/api/%s")
-                @RequiredArgsConstructor
+                @RequestMapping("/api/%ss")
                 public class %sController {
 
                     private final %sService service;
 
+                    public %sController(%sService service) {
+                        this.service = service;
+                    }
+
                     @GetMapping
-                    public List<%sDTO> findAll() {
+                    public List<%sDto> findAll() {
                         return service.findAll();
                     }
                 }
-                """.formatted(packageName, entityName.toLowerCase() + "s", entityName, entityName, entityName);
-
-        Files.writeString(dir.resolve(entityName + "Controller.java"), content);
+                """.formatted(basePackage, featureName, featureName, entityName, entityName, entityName, entityName);
     }
 }

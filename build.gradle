@@ -1,41 +1,33 @@
 plugins {
     id 'java'
-    id 'org.springframework.boot' version '3.2.3'
-    id 'io.spring.dependency-management' version '1.1.4'
+    id 'org.springframework.boot' version '3.3.5'
+    id 'io.spring.dependency-management' version '1.1.6'
 }
 
 group = 'com.rvvcode.ai.mcp'
 version = '0.0.1-SNAPSHOT'
 
 java {
-    sourceCompatibility = '17'
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(17)
+    }
 }
 
 repositories {
     mavenCentral()
-    maven { url 'https://repo.spring.io/milestone' }
-    maven { url 'https://repo.spring.io/snapshot' }
 }
 
 ext {
-    set('springAiVersion', '0.8.1') // Verify version or use a recent one
+    set('springAiVersion', '1.0.0')
 }
 
 dependencies {
-    implementation 'org.springframework.boot:spring-boot-starter-web'
-    // Use the specific starter for MCP if available, or the core spring-ai library and configure it.
-    // Assuming spring-ai-mcp-server-spring-boot-starter exists or similar functionality is in spring-ai-openai/etc.
-    // For now, I will use spring-ai-core and custom implementation if needed, but the user requested "Spring AI MCP Boot Starter".
-    // I will try to find the exact artifact. If not found, I'll use a generic spring-ai starter and implementing the MCP protocol manually if needed, 
-    // but the user specifically asked for "Spring AI MCP Boot Starter".
-    // Let's assume it's available in milestones.
-    implementation 'org.springframework.ai:spring-ai-mcp-server-spring-boot-starter:0.1.0-SNAPSHOT' 
-    implementation 'com.github.javaparser:javaparser-core:3.25.7'
+    implementation 'org.springframework.boot:spring-boot-starter'
+    implementation 'org.springframework.boot:spring-boot-starter-validation'
     implementation 'org.springframework.boot:spring-boot-starter-aop'
+    implementation 'org.springframework.ai:spring-ai-starter-mcp-server-webmvc'
+    implementation 'com.github.javaparser:javaparser-core:3.26.2'
 
-    compileOnly 'org.projectlombok:lombok'
-    annotationProcessor 'org.projectlombok:lombok'
-    
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
 }
 

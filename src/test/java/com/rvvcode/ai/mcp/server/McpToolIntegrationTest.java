@@ -1,7 +1,8 @@
 package com.rvvcode.ai.mcp.server;
 
-import com.rvvcode.ai.mcp.server.service.ProjectGenerator;
 import com.rvvcode.ai.mcp.server.service.DomainEnhancer;
+import com.rvvcode.ai.mcp.server.service.ProjectGenerator;
+import com.rvvcode.ai.mcp.server.service.TestGenerator;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -23,46 +24,39 @@ class McpToolIntegrationTest {
     @Autowired
     private DomainEnhancer domainEnhancer;
 
+    @Autowired
+    private TestGenerator testGenerator;
+
     @Test
-    void testBootstrapProject(@TempDir Path tempDir) {
-        Path projectLocation = tempDir.resolve("test-project");
-        String projectName = projectLocation.toString();
-        String basePackage = "com.test.app";
+    void tools_shouldWorkTogetherOnGeneratedProject(@TempDir Path tempDir) throws Exception {
+        Path originalUserDir = Path.of(System.getProperty("user.dir"));
+        Path projectRoot = tempDir.resolve("platform-app");
 
-        ProjectGenerator.BootstrapProjectRequest request = new ProjectGenerator.BootstrapProjectRequest(
-                projectName, basePackage, "reqs", null);
+        String bootstrapResult = projectGenerator.bootstrapProject(
+                projectRoot.toString(),
+                "com.acme.platform",
+                "REST APIs for enterprise customer workflows");
 
-        String result = projectGenerator.bootstrap(request);
+        assertThat(bootstrapResult).contains("Bootstrapped enterprise project");
+        assertThat(Files.exists(projectRoot.resolve("pom.xml"))).isTrue();
 
-        assertThat(result).contains("bootstrapped successfully");
-        assertThat(Files.exists(projectLocation.resolve("build.gradle"))).isTrue();
+        System.setProperty("user.dir", projectRoot.toString());
+        try {
+            String enhanceResult = domainEnhancer.enhanceDomain(
+                    "Account",
+                    Map.of("email", "String", "active", "Boolean"),
+                    List.of("java.util.Optional<AccountEntity> findByEmail(String email)"));
+            assertThat(enhanceResult).contains("Enhanced domain for Account");
 
-        // Now test enhancement on the created project
-        DomainEnhancer.EnhanceDomainRequest enhanceRequest = new DomainEnhancer.EnhanceDomainRequest(
-                "User",
-                Map.of("username", "String", "email", "String"),
-                List.of("findByEmail(String email)"),
-                projectLocation.toString());
+            Path accountService = projectRoot.resolve("src/main/java/com/acme/platform/account/AccountService.java");
+            assertThat(Files.exists(accountService)).isTrue();
 
-        String enhanceResult = domainEnhancer.enhance(enhanceRequest);
-        assertThat(enhanceResult).contains("Domain enhanced for User");
-
-        Path basePkgPath = projectLocation.resolve("src/main/java/com/test/app");
-        // Check for Package-by-Feature structure: com.test.app.user.*
-        Path featurePkgPath = basePkgPath.resolve("user");
-        assertThat(Files.exists(featurePkgPath.resolve("User.java"))).isTrue();
-        assertThat(Files.exists(featurePkgPath.resolve("UserRepository.java"))).isTrue();
-        assertThat(Files.exists(featurePkgPath.resolve("UserService.java"))).isTrue();
-        assertThat(Files.exists(featurePkgPath.resolve("UserController.java"))).isTrue();
-        assertThat(Files.exists(featurePkgPath.resolve("UserDTO.java"))).isTrue();
-        assertThat(Files.exists(featurePkgPath.resolve("UserMapper.java"))).isTrue();
+            String serviceSource = Files.readString(accountService);
+            String testsResult = testGenerator.generateTests("AccountService", serviceSource);
+            assertThat(testsResult).contains("AccountServiceTest");
+            assertThat(Files.exists(projectRoot.resolve("generated-tests/AccountServiceTest.java"))).isTrue();
+        } finally {
+            System.setProperty("user.dir", originalUserDir.toString());
+        }
     }
-
-    // Note: enhanceDomain test is tricky because it relies on system property
-    // "user.dir" or needs mocking of findProjectRoot.
-    // Ideally DomainEnhancer should accept projectRoot as an argument for
-    // testability.
-    // I will refactor DomainEnhancer to accept an optional root path or use a
-    // protected method we can override or spy.
-    // For now, I'll stick to testing bootstrap which is the main file generator.
 }

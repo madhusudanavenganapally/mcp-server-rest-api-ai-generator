@@ -1,0 +1,8 @@
+spring:
+  application:
+    name: enterprise-mcp-server
+
+logging:
+  level:
+    root: INFO
+    com.rvvcode.ai.mcp.server: INFO
